@@ -1,0 +1,75 @@
+name: Tenant import blog from repo
+
+on:
+  workflow_dispatch:
+    inputs:
+      tenant_slug:
+        required: true
+        type: string
+      github_repo:
+        required: true
+        type: string
+      github_branch:
+        required: false
+        type: string
+        default: main
+      blog_content_path:
+        required: false
+        type: string
+        default: src/content/blog
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TENANT: ${{ github.event.inputs.tenant_slug }}
+      GITHUB_REPO: ${{ github.event.inputs.github_repo }}
+      GITHUB_BRANCH: ${{ github.event.inputs.github_branch || 'main' }}
+      BLOG_PATH: ${{ github.event.inputs.blog_content_path || 'src/content/blog' }}
+      PAYLOAD_URL: ${{ secrets.PAYLOAD_URL }}
+      PAYLOAD_API_KEY: ${{ secrets.PAYLOAD_API_KEY }}
+      DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+    steps:
+      - name: Checkout platform
+        uses: actions/checkout@v4
+        with:
+          path: platform
+
+      - name: Resolve client repo GitHub token
+        working-directory: platform
+        env:
+          DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+          GH_FALLBACK_TOKEN: ${{ secrets.EXTERNAL_REPO_GITHUB_TOKEN || github.token }}
+        run: |
+          chmod +x .github/scripts/resolve-client-github-token.sh
+          .github/scripts/resolve-client-github-token.sh
+
+      - name: Checkout client repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITHUB_REPO }}
+          ref: ${{ env.GITHUB_BRANCH }}
+          token: ${{ env.CLIENT_GITHUB_TOKEN || secrets.EXTERNAL_REPO_GITHUB_TOKEN || github.token }}
+          path: site
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: platform/pnpm-lock.yaml
+
+      - name: Install and import
+        working-directory: platform
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter @dollarkoers/payload import:blog-from-repo-api -- \
+            --slug "$TENANT" \
+            --site "${{ github.workspace }}/site" \
+            --blog-path "$BLOG_PATH"

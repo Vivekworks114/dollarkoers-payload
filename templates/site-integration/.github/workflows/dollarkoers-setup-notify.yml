@@ -1,0 +1,47 @@
+# Notifies the Astropayload CMS when the setup PR is merged.
+# Add repository secrets (Settings → Secrets → Actions):
+#   DOLLARKOERS_URL          — e.g. https://cms.example.com
+#   DOLLARKOERS_REPORT_TOKEN — same value as DEPLOY_REPORT_TOKEN on the platform repo
+name: Astropayload setup notify
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  notify-merge:
+    if: >-
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'dollarkoers/setup-')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read tenant slug
+        id: cfg
+        run: |
+          if [ ! -f dollarkoers.config.json ]; then
+            echo "::error ::dollarkoers.config.json not found"
+            exit 1
+          fi
+          SLUG=$(node -e "console.log(JSON.parse(require('fs').readFileSync('dollarkoers.config.json','utf8')).tenantSlug||'')")
+          if [ -z "$SLUG" ]; then
+            echo "::error ::tenantSlug missing in dollarkoers.config.json"
+            exit 1
+          fi
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Payload
+        env:
+          PAYLOAD_URL: ${{ secrets.DOLLARKOERS_URL }}
+          REPORT_TOKEN: ${{ secrets.DOLLARKOERS_REPORT_TOKEN }}
+        run: |
+          if [ -z "$PAYLOAD_URL" ] || [ -z "$REPORT_TOKEN" ]; then
+            echo "::warning ::DOLLARKOERS_URL / DOLLARKOERS_REPORT_TOKEN not set — skip CMS notify"
+            exit 0
+          fi
+          curl -fsS -X POST "${PAYLOAD_URL%/}/api/tenants/report-github-setup" \
+            -H "content-type: application/json" \
+            -H "x-deploy-report-token: $REPORT_TOKEN" \
+            -d "{\"slug\":\"${{ steps.cfg.outputs.slug }}\",\"status\":\"ready\",\"prUrl\":\"${{ github.event.pull_request.html_url }}\",\"notes\":\"Setup PR merged in client repo.\"}"

@@ -1,0 +1,67 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+.next/
+.turbo/
+.astro/
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment variables
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+
+# Generated tenant configs (synced from Payload)
+apps/sites/*/tenant.config.json
+apps/sites/*/src/content/blog/*.md
+apps/sites/*/src/content/blog/*.mdx
+apps/sites/*/src/content/pages/*.md
+apps/sites/*/src/content/pages/*.mdx
+apps/sites/*/src/data/money-pages/
+
+# Migration artefacts (large, regenerable)
+**/migration/scraped/
+**/migration/image-errors.log
+
+# Wrangler / Cloudflare
+.wrangler/
+.dev.vars
+
+node_modules/
+.next/
+.turbo/
+.astro/
+.wrangler/
+dist/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+test/
+test/*
+10reviews/*
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat

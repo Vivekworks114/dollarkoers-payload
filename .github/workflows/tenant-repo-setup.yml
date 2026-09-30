@@ -1,0 +1,192 @@
+name: Tenant repo setup
+
+on:
+  workflow_dispatch:
+    inputs:
+      tenant_slug:
+        required: true
+        type: string
+      github_repo:
+        required: true
+        type: string
+      github_branch:
+        required: false
+        type: string
+        default: main
+      blog_content_path:
+        required: false
+        type: string
+        default: src/content/blog
+
+jobs:
+  setup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TENANT: ${{ github.event.inputs.tenant_slug }}
+      GITHUB_REPO: ${{ github.event.inputs.github_repo }}
+      GITHUB_BRANCH: ${{ github.event.inputs.github_branch || 'main' }}
+      BLOG_PATH: ${{ github.event.inputs.blog_content_path || 'src/content/blog' }}
+      PAYLOAD_URL: ${{ secrets.PAYLOAD_URL }}
+      DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+    steps:
+      - name: Checkout platform
+        uses: actions/checkout@v4
+        with:
+          path: platform
+
+      - name: Resolve client repo GitHub token
+        working-directory: platform
+        env:
+          DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+          GH_FALLBACK_TOKEN: ${{ secrets.EXTERNAL_REPO_GITHUB_TOKEN || github.token }}
+        run: |
+          chmod +x .github/scripts/resolve-client-github-token.sh
+          .github/scripts/resolve-client-github-token.sh
+
+      - name: Checkout client repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITHUB_REPO }}
+          ref: ${{ env.GITHUB_BRANCH }}
+          token: ${{ env.CLIENT_GITHUB_TOKEN || secrets.EXTERNAL_REPO_GITHUB_TOKEN || github.token }}
+          path: site
+
+      - name: Apply integration files
+        run: |
+          set -e
+          SRC="platform/templates/site-integration"
+          cp "$SRC/dollarkoers.config.json" site/dollarkoers.config.json
+          sed -i "s/\"tenantSlug\": \"\"/\"tenantSlug\": \"${TENANT}\"/" site/dollarkoers.config.json
+          sed -i "s|\"blogContentPath\": \"src/content/blog\"|\"blogContentPath\": \"${BLOG_PATH}\"|" site/dollarkoers.config.json
+          mkdir -p site/scripts site/.github/workflows
+          cp "$SRC/scripts/sync-content.example.mjs" site/scripts/sync-content.mjs
+          cp "$SRC/.github/workflows/dollarkoers-setup-notify.yml" site/.github/workflows/dollarkoers-setup-notify.yml
+          mkdir -p "site/$BLOG_PATH"
+          touch "site/$BLOG_PATH/.gitkeep"
+          if [ ! -f site/.gitignore ]; then touch site/.gitignore; fi
+          if ! grep -q 'dollarkoers.config.json' site/.gitignore 2>/dev/null; then
+            echo "" >> site/.gitignore
+            echo "# Local Payload credentials (optional for dev sync)" >> site/.gitignore
+            echo ".env.dollarkoers" >> site/.gitignore
+          fi
+
+      - name: Create branch and open PR
+        id: pr
+        working-directory: site
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          type gh >/dev/null 2>&1 || (sudo apt-get update -qq && sudo apt-get install -y -qq gh)
+          git config user.name "dollarkoers-bot"
+          git config user.email "bot@users.noreply.github.com"
+          BRANCH="dollarkoers/setup-${TENANT}-$(date +%Y%m%d)"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git checkout -b "$BRANCH"
+          git add -A
+          if git diff --staged --quiet; then
+            echo "No changes to commit — integration may already exist."
+            echo "pr_url=" >> "$GITHUB_OUTPUT"
+            echo "pr_number=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "chore: add Astropayload blog integration for ${TENANT}"
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --title "Astropayload: blog integration for ${TENANT}" \
+            --body "Adds dollarkoers.config.json, optional local sync script, blog folder, and a workflow that marks setup **ready** in Payload when this PR merges. Add secrets DOLLARKOERS_URL and DOLLARKOERS_REPORT_TOKEN (see platform docs/ONBOARDING.md). After merge, use **Publish content** in Payload — CI syncs blog markdown at build time." \
+            --base "${GITHUB_BRANCH}" \
+            --head "$BRANCH"
+          PR_URL=$(gh pr view --json url -q .url)
+          PR_NUM=$(gh pr view --json number -q .number)
+          echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUM" >> "$GITHUB_OUTPUT"
+
+      - name: Report setup PR opened
+        if: steps.pr.outputs.pr_url != ''
+        working-directory: platform
+        env:
+          PAYLOAD_URL: ${{ secrets.PAYLOAD_URL }}
+          DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+          PAYLOAD_API_KEY: ${{ secrets.PAYLOAD_API_KEY }}
+        run: |
+          pnpm --filter @dollarkoers/payload report:github-setup -- \
+            --slug "$TENANT" \
+            --status setup_dispatched \
+            --pr-url "${{ steps.pr.outputs.pr_url }}" \
+            --notes "Setup PR opened. Merge to mark ready, or wait for platform poll below."
+
+      - name: Wait for setup PR merge (poll, max 30 min)
+        if: steps.pr.outputs.pr_number != ''
+        working-directory: site
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUM="${{ steps.pr.outputs.pr_number }}"
+          for _ in $(seq 1 60); do
+            MERGED=$(gh pr view "$PR_NUM" --json merged -q .merged)
+            if [ "$MERGED" = "true" ]; then
+              echo "PR merged."
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "PR not merged within 30 minutes — client workflow or manual validate can mark ready later."
+          exit 0
+
+      - name: Setup pnpm (platform)
+        if: steps.pr.outputs.pr_number != ''
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - name: Setup Node (platform)
+        if: steps.pr.outputs.pr_number != ''
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: platform/pnpm-lock.yaml
+
+      - name: Install platform dependencies
+        if: steps.pr.outputs.pr_number != ''
+        working-directory: platform
+        run: pnpm install --frozen-lockfile
+
+      - name: Seed Payload from repo after setup merge
+        if: steps.pr.outputs.pr_number != ''
+        continue-on-error: true
+        working-directory: platform
+        env:
+          PAYLOAD_URL: ${{ secrets.PAYLOAD_URL }}
+          PAYLOAD_API_KEY: ${{ secrets.PAYLOAD_API_KEY }}
+        run: |
+          MERGED=$(cd ../site && gh pr view "${{ steps.pr.outputs.pr_number }}" --json merged -q .merged)
+          if [ "$MERGED" != "true" ]; then
+            echo "Setup PR not merged yet; skipping blog import."
+            exit 0
+          fi
+          pnpm --filter @dollarkoers/payload auto-import-blog-if-empty -- \
+            --slug "$TENANT" \
+            --site "${GITHUB_WORKSPACE}/site" \
+            --blog-path "$BLOG_PATH"
+
+      - name: Report setup ready (platform poll)
+        if: steps.pr.outputs.pr_number != ''
+        working-directory: platform
+        env:
+          PAYLOAD_URL: ${{ secrets.PAYLOAD_URL }}
+          DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+          PAYLOAD_API_KEY: ${{ secrets.PAYLOAD_API_KEY }}
+        run: |
+          MERGED=$(cd ../site && gh pr view "${{ steps.pr.outputs.pr_number }}" --json merged -q .merged)
+          if [ "$MERGED" != "true" ]; then
+            echo "PR not merged yet; skipping ready report."
+            exit 0
+          fi
+          pnpm --filter @dollarkoers/payload report:github-setup -- \
+            --slug "$TENANT" \
+            --status ready \
+            --pr-url "${{ steps.pr.outputs.pr_url }}" \
+            --notes "Setup PR merged (detected by platform workflow poll)."

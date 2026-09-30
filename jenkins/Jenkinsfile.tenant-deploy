@@ -1,0 +1,69 @@
+pipeline {
+  agent any
+
+  options {
+    timeout(time: 30, unit: 'MINUTES')
+    disableConcurrentBuilds()
+  }
+
+  parameters {
+    string(name: 'tenant_slug', description: 'Tenant slug', trim: true)
+    string(name: 'reason', defaultValue: 'publish', description: 'Trigger reason', trim: true)
+    choice(name: 'deploy_mode', choices: ['monorepo', 'external'], description: 'Deploy mode')
+    string(name: 'github_repo', defaultValue: '', description: 'owner/repo for external site', trim: true)
+    string(name: 'github_branch', defaultValue: 'main', description: 'Client repo branch', trim: true)
+    string(name: 'blog_content_path', defaultValue: 'src/content/blog', description: 'Blog path in site repo', trim: true)
+  }
+
+  environment {
+    PAYLOAD_URL = credentials('dollarkoers-payload-url')
+    DEPLOY_REPORT_TOKEN = credentials('dollarkoers-deploy-report-token')
+    PAYLOAD_API_KEY = "${env.PAYLOAD_API_KEY ?: ''}"
+    EXTERNAL_REPO_GITHUB_TOKEN = credentials('dollarkoers-external-repo-github-token')
+    PLATFORM_GIT_URL = "${env.PLATFORM_GIT_URL ?: ''}"
+    PLATFORM_GIT_BRANCH = "${env.PLATFORM_GIT_BRANCH ?: 'main'}"
+    PLATFORM_GIT_TOKEN = credentials('dollarkoers-platform-github-token')
+    GITHUB_OWNER = "${env.GITHUB_OWNER ?: ''}"
+    GITHUB_REPO = "${env.GITHUB_REPO ?: 'dollarkoers'}"
+    CLOUDFLARE_API_TOKEN = credentials('dollarkoers-cloudflare-api-token')
+    CLOUDFLARE_ACCOUNT_ID = credentials('dollarkoers-cloudflare-account-id')
+    CLOUDFLARE_WORKERS_DEV_SUBDOMAIN = "${env.CLOUDFLARE_WORKERS_DEV_SUBDOMAIN ?: ''}"
+    // Optional agent drop directory for per-tenant dotenv files: <dir>/<tenant_slug>.env
+    DOLLARKOERS_CLIENT_ENV_DIR = "${env.DOLLARKOERS_CLIENT_ENV_DIR ?: "${env.JENKINS_HOME}/dollarkoers-client-env"}"
+  }
+
+  stages {
+    stage('Deploy tenant') {
+      steps {
+        script {
+          def siteEnvCredId = "dollarkoers-site-env-${params.tenant_slug}"
+          def runDeploy = {
+            sh '''
+              chmod +x jenkins/scripts/*.sh
+              bash jenkins/scripts/tenant-deploy.sh
+            '''
+          }
+
+          // Optional Secret file credential (dotenv). Missing credential is OK.
+          def fileCreds = com.cloudbees.plugins.credentials.CredentialsProvider.lookupCredentials(
+            org.jenkinsci.plugins.plaincredentials.FileCredentials.class,
+            jenkins.model.Jenkins.instance,
+            null,
+            null
+          )
+          def hasSiteEnv = fileCreds.any { it.id == siteEnvCredId }
+
+          if (hasSiteEnv) {
+            echo "Binding optional client build env credential: ${siteEnvCredId}"
+            withCredentials([file(credentialsId: siteEnvCredId, variable: 'CLIENT_BUILD_ENV_FILE')]) {
+              runDeploy()
+            }
+          } else {
+            echo "No Jenkins Secret file '${siteEnvCredId}' — will try DOLLARKOERS_CLIENT_ENV_DIR/${params.tenant_slug}.env if present"
+            runDeploy()
+          }
+        }
+      }
+    }
+  }
+}

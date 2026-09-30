@@ -1,0 +1,34 @@
+{
+  "name": "dollarkoers",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0",
+    "pnpm": ">=9.0.0"
+  },
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "payload": "pnpm --filter @dollarkoers/payload run",
+    "payload:dev": "pnpm --filter @dollarkoers/payload run dev",
+    "payload:build": "pnpm --filter @dollarkoers/payload run build",
+    "payload:start": "pnpm --filter @dollarkoers/payload run start",
+    "payload:types": "pnpm --filter @dollarkoers/payload run generate:types",
+    "tenant-cli": "pnpm --filter @dollarkoers/tenant-cli exec tsx src/index.ts",
+    "site": "pnpm --filter",
+    "keukenfaqs:dev": "pnpm --filter @dollarkoers/site-keukenfaqs run dev",
+    "keukenfaqs:build": "pnpm --filter @dollarkoers/site-keukenfaqs run build",
+    "keukenfaqs:preview": "pnpm --filter @dollarkoers/site-keukenfaqs run preview",
+    "keukenfaqs:sync": "pnpm --filter @dollarkoers/site-keukenfaqs run sync:content",
+    "keukenfaqs:deploy": "pnpm --filter @dollarkoers/site-keukenfaqs run deploy",
+    "prepare": "node .githooks/install.mjs"
+  },
+  "devDependencies": {
+    "turbo": "^2.1.3",
+    "typescript": "^5.6.2"
+  }
+}

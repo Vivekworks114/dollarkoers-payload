@@ -1,0 +1,54 @@
+# Pull blog markdown from Payload before build/deploy.
+# Required secrets (Settings → Secrets → Actions):
+#   PAYLOAD_URL         — e.g. https://cms.example.com
+#   PAYLOAD_API_KEY     — super-admin API key (Payload admin → Users → Enable API Key)
+# Optional alternative to PAYLOAD_API_KEY:
+#   DEPLOY_REPORT_TOKEN — same value as on the dollarkoers CMS server
+#   DOLLARKOERS_GITHUB_TOKEN — read access to YOUR_ORG/dollarkoers (for checkout)
+name: Sync blog from Payload
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  TENANT: your-tenant-slug
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout site
+        uses: actions/checkout@v4
+
+      - name: Checkout dollarkoers (tenant-cli)
+        uses: actions/checkout@v4
+        with:
+          repository: YOUR_ORG/dollarkoers
+          token: ${{ secrets.DOLLARKOERS_GITHUB_TOKEN }}
+          path: platform
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - name: Sync blog from Payload
+        working-directory: platform
+        env:
+          PAYLOAD_URL: ${{ secrets.PAYLOAD_URL }}
+          PAYLOAD_API_KEY: ${{ secrets.PAYLOAD_API_KEY }}
+          DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm tenant-cli sync \
+            --slug "$TENANT" \
+            --site "${{ github.workspace }}" \
+            --blog-path src/content/blog \
+            --url "$PAYLOAD_URL"

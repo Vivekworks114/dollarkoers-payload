@@ -1,0 +1,44 @@
+pipeline {
+  agent any
+
+  options {
+    timeout(time: 15, unit: 'MINUTES')
+    disableConcurrentBuilds()
+  }
+
+  parameters {
+    string(name: 'tenant_slug', description: 'Tenant slug', trim: true)
+    string(name: 'tenant_domain', description: 'Primary domain (no protocol)', trim: true)
+    string(name: 'tenant_name', description: 'Display name', trim: true)
+    string(name: 'template', defaultValue: 'apps/sites/keukenfaqs', description: 'Template path', trim: true)
+  }
+
+  environment {
+    PAYLOAD_URL = credentials('dollarkoers-payload-url')
+    DEPLOY_REPORT_TOKEN = credentials('dollarkoers-deploy-report-token')
+    PAYLOAD_API_KEY = "${env.PAYLOAD_API_KEY ?: ''}"
+    PLATFORM_GIT_TOKEN = credentials('dollarkoers-platform-github-token')
+    GH_TOKEN = credentials('dollarkoers-platform-github-token')
+    GITHUB_OWNER = "${env.GITHUB_OWNER ?: ''}"
+    GITHUB_REPO = "${env.GITHUB_REPO ?: 'dollarkoers'}"
+    PLATFORM_GIT_BRANCH = "${env.PLATFORM_GIT_BRANCH ?: 'main'}"
+  }
+
+  stages {
+    stage('Checkout platform') {
+      steps {
+        checkout scm
+        sh 'git fetch --unshallow 2>/dev/null || git fetch --depth=1000 2>/dev/null || true'
+      }
+    }
+
+    stage('Scaffold tenant') {
+      steps {
+        sh '''
+          chmod +x jenkins/scripts/*.sh
+          bash jenkins/scripts/tenant-scaffold.sh
+        '''
+      }
+    }
+  }
+}

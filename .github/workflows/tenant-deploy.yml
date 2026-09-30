@@ -1,0 +1,318 @@
+name: Tenant deploy
+
+# Builds blog content from Payload and deploys a tenant site to Cloudflare Workers.
+# Public-repo hardening:
+# - workflow_dispatch only (no pull_request secrets)
+# - least-privilege permissions
+# - Cloudflare tokens never at job level (resolved after build, deploy steps only)
+# - CI secrets unset during untrusted external client install/build
+
+on:
+  workflow_dispatch:
+    inputs:
+      tenant_slug:
+        description: 'Tenant slug'
+        required: true
+        type: string
+      reason:
+        description: 'What triggered the deploy'
+        required: false
+        type: string
+      deploy_mode:
+        description: 'monorepo | external'
+        required: false
+        type: string
+        default: monorepo
+      github_repo:
+        description: 'owner/repo for external client site'
+        required: false
+        type: string
+      github_branch:
+        description: 'Branch for external repo'
+        required: false
+        type: string
+        default: main
+      blog_content_path:
+        description: 'Blog markdown path in site repo'
+        required: false
+        type: string
+        default: src/content/blog
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tenant-deploy-${{ github.event.inputs.tenant_slug }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TENANT: ${{ github.event.inputs.tenant_slug }}
+      DEPLOY_MODE: ${{ github.event.inputs.deploy_mode || 'monorepo' }}
+      GITHUB_REPO: ${{ github.event.inputs.github_repo }}
+      GITHUB_BRANCH: ${{ github.event.inputs.github_branch || 'main' }}
+      BLOG_CONTENT_PATH: ${{ github.event.inputs.blog_content_path || 'src/content/blog' }}
+      # Non-secret URL only at job scope. Tokens stay step-scoped.
+      PAYLOAD_URL: ${{ secrets.PAYLOAD_URL }}
+      GITHUB_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - name: Checkout platform
+        uses: actions/checkout@v4
+        with:
+          path: platform
+          persist-credentials: false
+
+      - name: Resolve client repo GitHub token
+        if: env.DEPLOY_MODE == 'external' && env.GITHUB_REPO != ''
+        working-directory: platform
+        env:
+          PAYLOAD_URL: ${{ secrets.PAYLOAD_URL }}
+          DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+          GH_FALLBACK_TOKEN: ${{ secrets.EXTERNAL_REPO_GITHUB_TOKEN || github.token }}
+        run: |
+          chmod +x .github/scripts/resolve-client-github-token.sh
+          .github/scripts/resolve-client-github-token.sh
+          # Drop CI auth from the shell after writing CLIENT_GITHUB_TOKEN to GITHUB_ENV.
+          unset DEPLOY_REPORT_TOKEN GH_FALLBACK_TOKEN || true
+
+      - name: Checkout client site (external)
+        if: env.DEPLOY_MODE == 'external' && env.GITHUB_REPO != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITHUB_REPO }}
+          ref: ${{ env.GITHUB_BRANCH }}
+          # Per-tenant credential via /api/ci/github-token, else EXTERNAL_REPO_GITHUB_TOKEN / github.token
+          token: ${{ env.CLIENT_GITHUB_TOKEN || secrets.EXTERNAL_REPO_GITHUB_TOKEN || github.token }}
+          path: site
+          persist-credentials: false
+
+      - name: Setup pnpm (platform)
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.12.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+          cache-dependency-path: platform/pnpm-lock.yaml
+
+      - name: Install platform dependencies
+        working-directory: platform
+        run: pnpm install --frozen-lockfile
+
+      - name: Seed Payload from repo (first publish only)
+        if: env.PAYLOAD_URL != ''
+        continue-on-error: true
+        working-directory: platform
+        env:
+          PAYLOAD_API_KEY: ${{ secrets.PAYLOAD_API_KEY }}
+          DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+        run: |
+          if [ "$DEPLOY_MODE" = "external" ]; then
+            SITE_ROOT="${GITHUB_WORKSPACE}/site"
+          else
+            SITE_ROOT="${GITHUB_WORKSPACE}/platform/apps/sites/${TENANT}"
+          fi
+          pnpm --filter @dollarkoers/payload auto-import-blog-if-empty -- \
+            --slug "$TENANT" \
+            --site "$SITE_ROOT" \
+            --blog-path "$BLOG_CONTENT_PATH"
+
+      - name: Report deploy in progress
+        if: env.PAYLOAD_URL != ''
+        continue-on-error: true
+        working-directory: platform
+        env:
+          PAYLOAD_API_KEY: ${{ secrets.PAYLOAD_API_KEY }}
+          DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+        run: |
+          pnpm --filter @dollarkoers/payload report:deploy -- \
+            --slug "$TENANT" \
+            --status in_progress \
+            --run-url "$GITHUB_RUN_URL"
+
+      - name: Resolve monorepo tenant
+        if: env.DEPLOY_MODE != 'external'
+        id: monorepo
+        working-directory: platform
+        run: |
+          if [ ! -d "apps/sites/${TENANT}" ]; then
+            echo "::error ::No tenant folder at apps/sites/${TENANT}. Connect a GitHub repo or scaffold the site."
+            exit 1
+          fi
+          echo "filter=@dollarkoers/site-${TENANT}" >> "$GITHUB_OUTPUT"
+
+      - name: Sync content (monorepo)
+        if: env.DEPLOY_MODE != 'external'
+        working-directory: platform
+        env:
+          PAYLOAD_API_KEY: ${{ secrets.PAYLOAD_API_KEY }}
+          DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+        run: |
+          pnpm --filter ${{ steps.monorepo.outputs.filter }} sync:content
+          echo "::notice ::Sync reads blog-posts FROM Payload CMS. If the live site has no posts, import or create them in Payload first (Publish does not import into CMS)."
+
+      - name: Sync content (external)
+        if: env.DEPLOY_MODE == 'external'
+        working-directory: platform
+        env:
+          SITE_ROOT: ${{ github.workspace }}/site
+          PAYLOAD_API_KEY: ${{ secrets.PAYLOAD_API_KEY }}
+          DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+        run: |
+          pnpm tenant-cli sync --slug "$TENANT" --site "$SITE_ROOT" --blog-path "$BLOG_CONTENT_PATH"
+          echo "::notice ::Check log line '[tenant-cli sync] done: { blog: N }'. N=0 means no posts in Payload — check auto-import (reads .md and .mdx) or import manually. Set tenant blog file extension to mdx if the site uses MDX."
+
+      # External client repos are untrusted relative to platform secrets.
+      # Do not pass PAYLOAD_*/DEPLOY_*/CLOUDFLARE_* into install or build.
+      - name: Install site dependencies (external)
+        if: env.DEPLOY_MODE == 'external'
+        working-directory: site
+        env:
+          PAYLOAD_URL: ''
+          PAYLOAD_API_KEY: ''
+          DEPLOY_REPORT_TOKEN: ''
+          CLOUDFLARE_API_TOKEN: ''
+          CLOUDFLARE_ACCOUNT_ID: ''
+          CLIENT_GITHUB_TOKEN: ''
+        run: |
+          if [ -f pnpm-lock.yaml ]; then
+            corepack enable
+            pnpm install --frozen-lockfile
+            echo "pkg=pnpm" >> "$GITHUB_ENV"
+          elif [ -f package-lock.json ]; then
+            npm ci
+            echo "pkg=npm" >> "$GITHUB_ENV"
+          else
+            npm install
+            echo "pkg=npm" >> "$GITHUB_ENV"
+          fi
+
+      # Optional multiline dotenv on the *platform* repo (prefer per-tenant secrets elsewhere).
+      - name: Write optional client build env (external)
+        if: env.DEPLOY_MODE == 'external'
+        working-directory: site
+        env:
+          CLIENT_BUILD_ENV: ${{ secrets.CLIENT_BUILD_ENV }}
+        run: |
+          if [ -z "${CLIENT_BUILD_ENV:-}" ]; then
+            echo "No CLIENT_BUILD_ENV platform secret — skipping"
+            exit 0
+          fi
+          printf '%s\n' "$CLIENT_BUILD_ENV" > .env
+          chmod 600 .env
+          echo "Wrote site/.env from CLIENT_BUILD_ENV (keys not logged)"
+
+      - name: Build (monorepo)
+        if: env.DEPLOY_MODE != 'external'
+        working-directory: platform
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+          PAYLOAD_API_KEY: ${{ secrets.PAYLOAD_API_KEY }}
+          DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+        run: pnpm --filter ${{ steps.monorepo.outputs.filter }} build
+
+      - name: Build (external)
+        if: env.DEPLOY_MODE == 'external'
+        working-directory: site
+        env:
+          TENANT: ${{ env.TENANT }}
+          NODE_OPTIONS: --max-old-space-size=8192
+          # Explicitly blank CI secrets so lifecycle scripts cannot see them.
+          PAYLOAD_URL: ''
+          PAYLOAD_API_KEY: ''
+          DEPLOY_REPORT_TOKEN: ''
+          CLOUDFLARE_API_TOKEN: ''
+          CLOUDFLARE_ACCOUNT_ID: ''
+          CLIENT_GITHUB_TOKEN: ''
+        run: |
+          if [ "${{ env.pkg }}" = "pnpm" ]; then pnpm run build; else npm run build; fi
+
+      - name: Resolve Cloudflare credentials from Payload
+        working-directory: platform
+        env:
+          TENANT: ${{ env.TENANT }}
+          PAYLOAD_URL: ${{ secrets.PAYLOAD_URL }}
+          DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+          # Optional shared fallback only — prefer per-tenant / Default in Payload.
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          CLOUDFLARE_WORKERS_DEV_SUBDOMAIN: ${{ secrets.CLOUDFLARE_WORKERS_DEV_SUBDOMAIN }}
+        run: |
+          chmod +x .github/scripts/resolve-cloudflare-credentials.sh
+          .github/scripts/resolve-cloudflare-credentials.sh
+
+      - name: Deploy to Cloudflare Workers (monorepo)
+        if: env.DEPLOY_MODE != 'external'
+        id: cf_deploy_mono
+        working-directory: platform
+        run: |
+          set -o pipefail
+          pnpm --filter ${{ steps.monorepo.outputs.filter }} deploy 2>&1 | tee deploy.log
+          WORKERS_URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' deploy.log | tail -1 || true)
+          echo "workers_url=${WORKERS_URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy to Cloudflare Workers (external)
+        if: env.DEPLOY_MODE == 'external'
+        id: cf_deploy_ext
+        working-directory: site
+        env:
+          TENANT: ${{ env.TENANT }}
+          # CLOUDFLARE_* only from Resolve step (GITHUB_ENV). No Payload/GitHub tokens here.
+          PAYLOAD_URL: ''
+          PAYLOAD_API_KEY: ''
+          DEPLOY_REPORT_TOKEN: ''
+          CLIENT_GITHUB_TOKEN: ''
+        run: |
+          set -o pipefail
+          # Build already ran — deploy only (do not re-run npm run deploy).
+          if [ "${{ env.pkg }}" = "pnpm" ]; then
+            if ! pnpm exec wrangler --version >/dev/null 2>&1; then
+              echo "Installing wrangler (missing from client package.json)"
+              pnpm add -D wrangler@^4.84.0
+            fi
+            pnpm exec wrangler deploy 2>&1 | tee deploy.log
+          else
+            if ! npx wrangler --version >/dev/null 2>&1; then
+              echo "Installing wrangler (missing from client package.json)"
+              npm install -D wrangler@^4.84.0
+            fi
+            npx wrangler deploy 2>&1 | tee deploy.log
+          fi
+          WORKERS_URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' deploy.log | tail -1 || true)
+          echo "workers_url=${WORKERS_URL}" >> "$GITHUB_OUTPUT"
+
+      - name: Report deploy success
+        if: success() && env.PAYLOAD_URL != ''
+        continue-on-error: true
+        working-directory: platform
+        env:
+          PAYLOAD_API_KEY: ${{ secrets.PAYLOAD_API_KEY }}
+          DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+        run: |
+          WORKERS_URL="${{ steps.cf_deploy_mono.outputs.workers_url }}"
+          if [ -z "$WORKERS_URL" ]; then WORKERS_URL="${{ steps.cf_deploy_ext.outputs.workers_url }}"; fi
+          pnpm --filter @dollarkoers/payload report:deploy -- \
+            --slug "$TENANT" \
+            --status success \
+            --workers-url "$WORKERS_URL" \
+            --run-url "$GITHUB_RUN_URL"
+
+      - name: Report deploy failure
+        if: failure() && env.PAYLOAD_URL != ''
+        continue-on-error: true
+        working-directory: platform
+        env:
+          PAYLOAD_API_KEY: ${{ secrets.PAYLOAD_API_KEY }}
+          DEPLOY_REPORT_TOKEN: ${{ secrets.DEPLOY_REPORT_TOKEN }}
+        run: |
+          pnpm --filter @dollarkoers/payload report:deploy -- \
+            --slug "$TENANT" \
+            --status failure \
+            --run-url "$GITHUB_RUN_URL" \
+            --error "See GitHub Actions run for logs"

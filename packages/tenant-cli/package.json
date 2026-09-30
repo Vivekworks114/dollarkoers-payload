@@ -1,0 +1,20 @@
+{
+  "name": "@dollarkoers/tenant-cli",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "tenant-cli": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "echo \"no lint\""
+  },
+  "dependencies": {
+    "@dollarkoers/core": "workspace:*",
+    "@dollarkoers/payload-sdk": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  }
+}

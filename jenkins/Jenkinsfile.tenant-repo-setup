@@ -1,0 +1,38 @@
+pipeline {
+  agent any
+
+  options {
+    timeout(time: 30, unit: 'MINUTES')
+  }
+
+  parameters {
+    string(name: 'tenant_slug', description: 'Tenant slug', trim: true)
+    string(name: 'github_repo', description: 'owner/repo', trim: true)
+    string(name: 'github_branch', defaultValue: 'main', trim: true)
+    string(name: 'blog_content_path', defaultValue: 'src/content/blog', trim: true)
+  }
+
+  environment {
+    PAYLOAD_URL = credentials('dollarkoers-payload-url')
+    DEPLOY_REPORT_TOKEN = credentials('dollarkoers-deploy-report-token')
+    PAYLOAD_API_KEY = "${env.PAYLOAD_API_KEY ?: ''}"
+    EXTERNAL_REPO_GITHUB_TOKEN = credentials('dollarkoers-external-repo-github-token')
+    PLATFORM_GIT_TOKEN = credentials('dollarkoers-platform-github-token')
+    GH_TOKEN = credentials('dollarkoers-platform-github-token')
+    GITHUB_TOKEN = credentials('dollarkoers-platform-github-token')
+    PLATFORM_GIT_BRANCH = "${env.PLATFORM_GIT_BRANCH ?: 'main'}"
+    GITHUB_OWNER = "${env.GITHUB_OWNER ?: ''}"
+    GITHUB_REPO = "${env.GITHUB_REPO ?: 'dollarkoers'}"
+  }
+
+  stages {
+    stage('Setup client repo') {
+      steps {
+        sh '''
+          chmod +x jenkins/scripts/*.sh
+          bash jenkins/scripts/tenant-repo-setup.sh
+        '''
+      }
+    }
+  }
+}

@@ -1,0 +1,30 @@
+pipeline {
+  agent any
+
+  triggers {
+    cron('0 * * * *')
+  }
+
+  options {
+    timeout(time: 15, unit: 'MINUTES')
+  }
+
+  environment {
+    PAYLOAD_URL = credentials('dollarkoers-payload-url')
+    DEPLOY_REPORT_TOKEN = credentials('dollarkoers-deploy-report-token')
+    PAYLOAD_API_KEY = "${env.PAYLOAD_API_KEY ?: ''}"
+    PLATFORM_GIT_TOKEN = credentials('dollarkoers-platform-github-token')
+    PLATFORM_GIT_BRANCH = "${env.PLATFORM_GIT_BRANCH ?: 'main'}"
+  }
+
+  stages {
+    stage('Scheduled publish') {
+      steps {
+        sh '''
+          chmod +x jenkins/scripts/*.sh
+          bash jenkins/scripts/scheduled-publish.sh
+        '''
+      }
+    }
+  }
+}
