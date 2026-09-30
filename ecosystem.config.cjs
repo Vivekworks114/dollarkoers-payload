@@ -17,6 +17,8 @@
  * To inspect:
  *   pm2 status
  *   pm2 logs dollarkoers-payload --lines 200
+ *
+ * Listens on port 3002 (see apps/payload package.json start:prod).
  */
 module.exports = {
   apps: [
@@ -36,6 +38,7 @@ module.exports = {
       // disables auto-`push` on the DB. Always 'production' on the server.
       env: {
         NODE_ENV: 'production',
+        PORT: '3002',
       },
       // Log to disk so PM2 doesn't drop them.
       out_file: '/var/log/dollarkoers-payload/out.log',
