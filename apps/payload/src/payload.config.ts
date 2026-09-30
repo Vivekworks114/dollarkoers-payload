@@ -72,7 +72,11 @@ export default buildConfig({
     pool: {
       connectionString: process.env.DATABASE_URI || '',
     },
-    push: process.env.NODE_ENV !== 'production',
+    // Dev: always push. Prod: off unless PAYLOAD_DB_PUSH=1 (one-shot empty-DB bootstrap).
+    push:
+      process.env.NODE_ENV !== 'production' ||
+      process.env.PAYLOAD_DB_PUSH === '1' ||
+      process.env.PAYLOAD_DB_PUSH === 'true',
   }),
 
   sharp,
